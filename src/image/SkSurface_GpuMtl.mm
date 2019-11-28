@@ -48,8 +48,8 @@ sk_sp<SkSurface> SkSurface::MakeFromCAMetalLayer(GrContext* context,
     }
 
     GrSurfaceDesc desc;
-    desc.fWidth = metalLayer.drawableSize.width;
-    desc.fHeight = metalLayer.drawableSize.height;
+    desc.fWidth = metalLayer.frame.size.width * metalLayer.contentsScale;
+    desc.fHeight = metalLayer.frame.size.height * metalLayer.contentsScale;
     desc.fConfig = config;
 
     GrProxyProvider::TextureInfo texInfo;
