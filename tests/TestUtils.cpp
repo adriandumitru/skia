@@ -13,15 +13,17 @@
 #include "src/gpu/GrContextPriv.h"
 #include "src/gpu/GrDrawingManager.h"
 #include "src/gpu/GrGpu.h"
+#include "src/gpu/GrImageInfo.h"
 #include "src/gpu/GrSurfaceContext.h"
 #include "src/gpu/GrSurfaceProxy.h"
 #include "src/gpu/GrTextureContext.h"
 #include "src/gpu/GrTextureProxy.h"
 #include "src/gpu/SkGr.h"
 
-void test_read_pixels(skiatest::Reporter* reporter,
-                      GrSurfaceContext* srcContext, uint32_t expectedPixelValues[],
-                      const char* testName) {
+void TestReadPixels(skiatest::Reporter* reporter,
+                    GrSurfaceContext* srcContext,
+                    uint32_t expectedPixelValues[],
+                    const char* testName) {
     int pixelCnt = srcContext->width() * srcContext->height();
     SkAutoTMalloc<uint32_t> pixels(pixelCnt);
     memset(pixels.get(), 0, sizeof(uint32_t)*pixelCnt);
@@ -42,9 +44,10 @@ void test_read_pixels(skiatest::Reporter* reporter,
     }
 }
 
-void test_write_pixels(skiatest::Reporter* reporter,
-                       GrSurfaceContext* dstContext, bool expectedToWork,
-                       const char* testName) {
+void TestWritePixels(skiatest::Reporter* reporter,
+                     GrSurfaceContext* dstContext,
+                     bool expectedToWork,
+                     const char* testName) {
     int pixelCnt = dstContext->width() * dstContext->height();
     SkAutoTMalloc<uint32_t> pixels(pixelCnt);
     for (int y = 0; y < dstContext->width(); ++y) {
@@ -69,12 +72,15 @@ void test_write_pixels(skiatest::Reporter* reporter,
         return;
     }
 
-    test_read_pixels(reporter, dstContext, pixels.get(), testName);
+    TestReadPixels(reporter, dstContext, pixels.get(), testName);
 }
 
-void test_copy_from_surface(skiatest::Reporter* reporter, GrContext* context, GrSurfaceProxy* proxy,
-                            GrColorType colorType, uint32_t expectedPixelValues[],
-                            const char* testName) {
+void TestCopyFromSurface(skiatest::Reporter* reporter,
+                         GrContext* context,
+                         GrSurfaceProxy* proxy,
+                         GrColorType colorType,
+                         uint32_t expectedPixelValues[],
+                         const char* testName) {
     sk_sp<GrTextureProxy> dstProxy = GrSurfaceProxy::Copy(context, proxy, GrMipMapped::kNo,
                                                           SkBackingFit::kExact, SkBudgeted::kYes);
     SkASSERT(dstProxy);
@@ -83,10 +89,10 @@ void test_copy_from_surface(skiatest::Reporter* reporter, GrContext* context, Gr
                                                                 kPremul_SkAlphaType);
     SkASSERT(dstContext);
 
-    test_read_pixels(reporter, dstContext.get(), expectedPixelValues, testName);
+    TestReadPixels(reporter, dstContext.get(), expectedPixelValues, testName);
 }
 
-void fill_pixel_data(int width, int height, GrColor* data) {
+void FillPixelData(int width, int height, GrColor* data) {
     for (int j = 0; j < height; ++j) {
         for (int i = 0; i < width; ++i) {
             unsigned int red = (unsigned int)(256.f * (i / (float)width));
@@ -97,37 +103,27 @@ void fill_pixel_data(int width, int height, GrColor* data) {
     }
 }
 
-bool create_backend_texture(GrContext* context, GrBackendTexture* backendTex,
-                            const SkImageInfo& ii, const SkColor4f& color,
-                            GrMipMapped mipMapped, GrRenderable renderable) {
-    // TODO: use the color-init version of createBackendTexture once Metal supports it.
-#if 0
+bool CreateBackendTexture(GrContext* context,
+                          GrBackendTexture* backendTex,
+                          const SkImageInfo& ii,
+                          const SkColor4f& color,
+                          GrMipMapped mipMapped,
+                          GrRenderable renderable) {
     *backendTex = context->createBackendTexture(ii.width(), ii.height(), ii.colorType(),
                                                 color, mipMapped, renderable);
-#else
-    SkBitmap bm;
-    bm.allocPixels(ii);
-    sk_memset32(bm.getAddr32(0, 0), color.toSkColor(), ii.width() * ii.height());
-
-    SkASSERT(GrMipMapped::kNo == mipMapped);
-    *backendTex = context->priv().createBackendTexture(&bm.pixmap(), 1, renderable,
-                                                       GrProtected::kNo);
-#endif
-
     return backendTex->isValid();
 }
 
-void delete_backend_texture(GrContext* context, const GrBackendTexture& backendTex) {
+void DeleteBackendTexture(GrContext* context, const GrBackendTexture& backendTex) {
     GrFlushInfo flushInfo;
     flushInfo.fFlags = kSyncCpu_GrFlushFlag;
     context->flush(flushInfo);
     context->deleteBackendTexture(backendTex);
 }
 
-bool does_full_buffer_contain_correct_color(const GrColor* srcBuffer,
-                                            const GrColor* dstBuffer,
-                                            int width,
-                                            int height) {
+bool DoesFullBufferContainCorrectColor(const GrColor* srcBuffer,
+                                       const GrColor* dstBuffer,
+                                       int width, int height) {
     const GrColor* srcPtr = srcBuffer;
     const GrColor* dstPtr = dstBuffer;
     for (int j = 0; j < height; ++j) {
@@ -142,7 +138,7 @@ bool does_full_buffer_contain_correct_color(const GrColor* srcBuffer,
     return true;
 }
 
-bool bitmap_to_base64_data_uri(const SkBitmap& bitmap, SkString* dst) {
+bool BipmapToBase64DataURI(const SkBitmap& bitmap, SkString* dst) {
     SkPixmap pm;
     if (!bitmap.peekPixels(&pm)) {
         dst->set("peekPixels failed");
@@ -205,9 +201,9 @@ bool compare_pixels(int width, int height,
     return true;
 }
 
-bool compare_pixels(const GrPixelInfo& infoA, const char* a, size_t rowBytesA,
-                    const GrPixelInfo& infoB, const char* b, size_t rowBytesB,
-                    const float tolRGBA[4], std::function<ComparePixmapsErrorReporter>& error) {
+bool ComparePixels(const GrImageInfo& infoA, const char* a, size_t rowBytesA,
+                   const GrImageInfo& infoB, const char* b, size_t rowBytesB,
+                   const float tolRGBA[4], std::function<ComparePixmapsErrorReporter>& error) {
     if (infoA.width() != infoB.width() || infoA.height() != infoB.height()) {
         static constexpr float kDummyDiffs[4] = {};
         error(-1, -1, kDummyDiffs);
@@ -228,7 +224,7 @@ bool compare_pixels(const GrPixelInfo& infoA, const char* a, size_t rowBytesA,
     } else {
         floatCS = SkColorSpace::MakeSRGBLinear();
     }
-    GrPixelInfo floatInfo(GrColorType::kRGBA_F32, floatAlphaType, std::move(floatCS),
+    GrImageInfo floatInfo(GrColorType::kRGBA_F32, floatAlphaType, std::move(floatCS),
                           infoA.width(), infoA.height());
 
     size_t floatBpp = GrColorTypeBytesPerPixel(GrColorType::kRGBA_F32);
@@ -248,15 +244,15 @@ bool compare_pixels(const GrPixelInfo& infoA, const char* a, size_t rowBytesA,
                           tolRGBA, error);
 }
 
-bool compare_pixels(const SkPixmap& a, const SkPixmap& b, const float tolRGBA[4],
-                    std::function<ComparePixmapsErrorReporter>& error) {
-    return compare_pixels(a.info(), static_cast<const char*>(a.addr()), a.rowBytes(),
-                          b.info(), static_cast<const char*>(b.addr()), b.rowBytes(),
-                          tolRGBA, error);
+bool ComparePixels(const SkPixmap& a, const SkPixmap& b, const float tolRGBA[4],
+                   std::function<ComparePixmapsErrorReporter>& error) {
+    return ComparePixels(a.info(), static_cast<const char*>(a.addr()), a.rowBytes(),
+                         b.info(), static_cast<const char*>(b.addr()), b.rowBytes(),
+                         tolRGBA, error);
 }
 
-bool check_solid_pixels(const SkColor4f& col, const SkPixmap& pixmap,
-                        const float tolRGBA[4], std::function<ComparePixmapsErrorReporter>& error) {
+bool CheckSolidPixels(const SkColor4f& col, const SkPixmap& pixmap,
+                      const float tolRGBA[4], std::function<ComparePixmapsErrorReporter>& error) {
 
     size_t floatBpp = GrColorTypeBytesPerPixel(GrColorType::kRGBA_F32);
 
@@ -264,8 +260,8 @@ bool check_solid_pixels(const SkColor4f& col, const SkPixmap& pixmap,
     // First convert 'col' to be compatible with 'pixmap'
     {
         sk_sp<SkColorSpace> srcCS = SkColorSpace::MakeSRGBLinear();
-        GrPixelInfo srcInfo(GrColorType::kRGBA_F32, kUnpremul_SkAlphaType, std::move(srcCS), 1, 1);
-        GrPixelInfo dstInfo(GrColorType::kRGBA_F32, pixmap.alphaType(), pixmap.refColorSpace(), 1, 1);
+        GrImageInfo srcInfo(GrColorType::kRGBA_F32, kUnpremul_SkAlphaType, std::move(srcCS), 1, 1);
+        GrImageInfo dstInfo(GrColorType::kRGBA_F32, pixmap.alphaType(), pixmap.refColorSpace(), 1, 1);
 
         SkAssertResult(GrConvertPixels(dstInfo, floatA.get(), floatBpp, srcInfo,
                                        col.vec(), floatBpp));
@@ -275,7 +271,7 @@ bool check_solid_pixels(const SkColor4f& col, const SkPixmap& pixmap,
     std::unique_ptr<char[]> floatB(new char[floatRowBytes * pixmap.height()]);
     // Then convert 'pixmap' to RGBA_F32
     {
-        GrPixelInfo dstInfo(GrColorType::kRGBA_F32, pixmap.alphaType(), pixmap.refColorSpace(),
+        GrImageInfo dstInfo(GrColorType::kRGBA_F32, pixmap.alphaType(), pixmap.refColorSpace(),
                             pixmap.width(), pixmap.height());
 
         SkAssertResult(GrConvertPixels(dstInfo, floatB.get(), floatRowBytes, pixmap.info(),
@@ -294,6 +290,17 @@ bool check_solid_pixels(const SkColor4f& col, const SkPixmap& pixmap,
 
     return compare_pixels(pixmap.width(), pixmap.height(), floatA.get(), atA, floatB.get(), atB,
                           tolRGBA, error);
+}
+
+void CheckSingleThreadedProxyRefs(skiatest::Reporter* reporter,
+                                  GrTextureProxy* proxy,
+                                  int32_t expectedProxyRefs,
+                                  int32_t expectedBackingRefs) {
+    int32_t actualBackingRefs = proxy->testingOnly_getBackingRefCnt();
+
+    REPORTER_ASSERT(reporter, proxy->refCntGreaterThan(expectedProxyRefs - 1) &&
+                              !proxy->refCntGreaterThan(expectedProxyRefs));
+    REPORTER_ASSERT(reporter, actualBackingRefs == expectedBackingRefs);
 }
 
 #include "src/utils/SkCharToGlyphCache.h"

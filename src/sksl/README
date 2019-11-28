@@ -24,7 +24,7 @@ Differences from GLSL
   the same as if and switch in all respects other than it being a compile-time
   error to use a non-constant expression as a test.
 * GLSL caps can be referenced via the syntax 'sk_Caps.<name>', e.g.
-  sk_Caps.sampleVariablesSupport. The value will be a constant boolean or int,
+  sk_Caps.canUseAnyFunctionInShader. The value will be a constant boolean or int,
   as appropriate. As SkSL supports constant folding and branch elimination, this
   means that an 'if' statement which statically queries a cap will collapse down
   to the chosen branch, meaning that:
@@ -141,7 +141,7 @@ Within an '.fp' fragment processor file:
   'layout(when=foo) uniform int x;' means that this uniform will only be
   emitted when the 'foo' expression is true.
 * 'in' variables support an additional 'key' layout key.
-  'layout(key) uniform int x;' means that this uniform should be included in
+  'layout(key) in uniform int x;' means that this uniform should be included in
   the program's key. Matrix variables additionally support 'key=identity',
   which causes the key to consider only whether or not the matrix is an
   identity matrix.

@@ -54,6 +54,9 @@
 #define RETURN_ON_NULL(ptr)     do { if (nullptr == (ptr)) return; } while (0)
 #define RETURN_ON_FALSE(pred)   do { if (!(pred)) return; } while (0)
 
+// This is a test: static_assert with no message is a c++17 feature.
+static_assert(true);
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 /*
@@ -616,6 +619,10 @@ void SkCanvas::onFlush() {
     }
 }
 
+SkSurface* SkCanvas::getSurface() const {
+    return fSurfaceBase;
+}
+
 SkISize SkCanvas::getBaseLayerSize() const {
     SkBaseDevice* d = this->getDevice();
     return d ? SkISize::Make(d->width(), d->height()) : SkISize::Make(0, 0);
@@ -1028,11 +1035,11 @@ void SkCanvas::DrawDeviceWithFilter(SkBaseDevice* src, const SkImageFilter* filt
 
         // Manually setting the device's CTM requires accounting for the device's origin.
         // TODO (michaelludwig) - This could be simpler if the dst device had its origin configured
-        // before filtering the backdrop device, and if SkAutoDeviceCTMRestore had a way to accept
+        // before filtering the backdrop device, and if SkAutoDeviceTransformRestore had a way to accept
         // a global CTM instead of a device CTM.
         SkMatrix dstCTM = toRoot;
         dstCTM.postTranslate(-dstOrigin.x(), -dstOrigin.y());
-        SkAutoDeviceCTMRestore acr(dst, dstCTM);
+        SkAutoDeviceTransformRestore adr(dst, dstCTM);
 
         // And because devices don't have a special-image draw function that supports arbitrary
         // matrices, we are abusing the asImage() functionality here...
@@ -1045,19 +1052,11 @@ void SkCanvas::DrawDeviceWithFilter(SkBaseDevice* src, const SkImageFilter* filt
     }
 }
 
-// This is shared by all backends, but contains raster-specific thoughts. Can we defer to the
-// device to perform this?
 static SkImageInfo make_layer_info(const SkImageInfo& prev, int w, int h, const SkPaint* paint) {
-    // Need to force L32 for now if we have an image filter.
-    // If filters ever support other colortypes, e.g. F16, we can modify this check.
-    if (paint && paint->getImageFilter()) {
-        // TODO: can we query the imagefilter, to see if it can handle floats (so we don't always
-        //       use N32 when the layer itself was float)?
-        return SkImageInfo::MakeN32Premul(w, h, prev.refColorSpace());
-    }
-
     SkColorType ct = prev.colorType();
-    if (prev.bytesPerPixel() <= 4) {
+    if (prev.bytesPerPixel() <= 4 &&
+        prev.colorType() != kRGBA_8888_SkColorType &&
+        prev.colorType() != kBGRA_8888_SkColorType) {
         // "Upgrade" A8, G8, 565, 4444, 1010102, 101010x, and 888x to 8888,
         // ensuring plenty of alpha bits for the layer, perhaps losing some color bits in return.
         ct = kN32_SkColorType;
@@ -2251,7 +2250,7 @@ void SkCanvas::onDrawBehind(const SkPaint& paint) {
         // We use clipRegion because it is already defined to operate in dev-space
         // (i.e. ignores the ctm). However, it is going to first translate by -origin,
         // but we don't want that, so we undo that before calling in.
-        SkRegion rgn(bounds.makeOffset(dev->fOrigin.fX, dev->fOrigin.fY));
+        SkRegion rgn(bounds.makeOffset(dev->fOrigin));
         dev->clipRegion(rgn, SkClipOp::kIntersect);
         dev->drawPaint(draw.paint());
         dev->restore(fMCRec->fMatrix);
@@ -2442,7 +2441,7 @@ void SkCanvas::onDrawImage(const SkImage* image, SkScalar x, SkScalar y, const S
         const SkPaint& pnt = draw.paint();
         if (special) {
             SkPoint pt;
-            iter.fDevice->ctm().mapXY(x, y, &pt);
+            iter.fDevice->localToDevice().mapXY(x, y, &pt);
             iter.fDevice->drawSpecial(special.get(),
                                       SkScalarRoundToInt(pt.fX),
                                       SkScalarRoundToInt(pt.fY), pnt,
@@ -2520,7 +2519,7 @@ void SkCanvas::onDrawBitmap(const SkBitmap& bitmap, SkScalar x, SkScalar y, cons
         const SkPaint& pnt = draw.paint();
         if (special) {
             SkPoint pt;
-            iter.fDevice->ctm().mapXY(x, y, &pt);
+            iter.fDevice->localToDevice().mapXY(x, y, &pt);
             iter.fDevice->drawSpecial(special.get(),
                                       SkScalarRoundToInt(pt.fX),
                                       SkScalarRoundToInt(pt.fY), pnt,
@@ -3011,7 +3010,7 @@ SkBaseDevice* SkCanvas::LayerIter::device() const {
 }
 
 const SkMatrix& SkCanvas::LayerIter::matrix() const {
-    return fImpl->fDevice->ctm();
+    return fImpl->fDevice->localToDevice();
 }
 
 const SkPaint& SkCanvas::LayerIter::paint() const {

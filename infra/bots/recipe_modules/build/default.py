@@ -127,6 +127,11 @@ def compile_fn(api, checkout_root, out_dir):
         # We have some bots on 10.13.
         env['MACOSX_DEPLOYMENT_TARGET'] = '10.13'
 
+  if 'CheckGeneratedFiles' in extra_tokens:
+    compiler = 'Clang'
+    args['skia_compile_processors'] = 'true'
+    args['skia_generate_workarounds'] = 'true'
+
   if compiler == 'Clang' and api.vars.is_linux:
     cc  = clang_linux + '/bin/clang'
     cxx = clang_linux + '/bin/clang++'
@@ -140,32 +145,6 @@ def compile_fn(api, checkout_root, out_dir):
 
   elif compiler == 'Clang':
     cc, cxx = 'clang', 'clang++'
-  elif compiler == 'GCC':
-    if target_arch in ['mips64el', 'loongson3a']:
-      mips64el_toolchain_linux = str(api.vars.slave_dir.join(
-          'mips64el_toolchain_linux'))
-      cc  = mips64el_toolchain_linux + '/bin/mips64el-linux-gnuabi64-gcc-7'
-      cxx = mips64el_toolchain_linux + '/bin/mips64el-linux-gnuabi64-g++-7'
-      env['LD_LIBRARY_PATH'] = (
-          mips64el_toolchain_linux + '/lib/x86_64-linux-gnu/')
-      extra_ldflags.append('-L' + mips64el_toolchain_linux +
-                           '/mips64el-linux-gnuabi64/lib')
-      extra_cflags.extend([
-          '-Wno-format-truncation',
-          '-Wno-uninitialized',
-          ('-DDUMMY_mips64el_toolchain_linux_version=%s' %
-           api.run.asset_version('mips64el_toolchain_linux', skia_dir))
-      ])
-      if configuration == 'Release':
-        # This warning is only triggered when fuzz_canvas is inlined.
-        extra_cflags.append('-Wno-strict-overflow')
-      args.update({
-        'skia_use_system_freetype2': 'false',
-        'skia_use_fontconfig':       'false',
-        'skia_enable_gpu':           'false',
-      })
-    else:
-      cc, cxx = 'gcc', 'g++'
 
   if 'Tidy' in extra_tokens:
     # Swap in clang-tidy.sh for clang++, but update PATH so it can find clang++.
@@ -246,8 +225,6 @@ def compile_fn(api, checkout_root, out_dir):
       'skia_use_vulkan':        'false',
       'skia_use_zlib':          'false',
     })
-  if 'NoGPU' in extra_tokens:
-    args['skia_enable_gpu'] = 'false'
   if 'Shared' in extra_tokens:
     args['is_component_build'] = 'true'
   if 'Vulkan' in extra_tokens and not 'Android' in extra_tokens:
@@ -274,10 +251,10 @@ def compile_fn(api, checkout_root, out_dir):
   if 'iOS' in extra_tokens:
     # Bots use Chromium signing cert.
     args['skia_ios_identity'] = '".*GS9WA.*"'
-    args['skia_ios_profile'] = '"Upstream Testing Provisioning Profile"'
-  if 'CheckGeneratedFiles' in extra_tokens:
-    args['skia_compile_processors'] = 'true'
-    args['skia_generate_workarounds'] = 'true'
+    # Get mobileprovision via the CIPD package.
+    args['skia_ios_profile'] = '"%s"' % api.vars.slave_dir.join(
+        'provisioning_profile_ios',
+        'Upstream_Testing_Provisioning_Profile.mobileprovision')
   if compiler == 'Clang' and 'Win' in os:
     args['clang_win'] = '"%s"' % api.vars.slave_dir.join('clang_win')
     extra_cflags.append('-DDUMMY_clang_win_version=%s' %
@@ -334,14 +311,16 @@ def compile_fn(api, checkout_root, out_dir):
       api.run(api.step, 'ninja', cmd=['ninja', '-C', out_dir])
 
 
-def copy_extra_build_products(api, src, dst):
+def copy_build_products(api, src, dst):
+  util.copy_listed_files(api, src, dst, util.DEFAULT_BUILD_PRODUCTS)
   extra_tokens  = api.vars.extra_tokens
   os            = api.vars.builder_cfg.get('os', '')
 
   if 'SwiftShader' in extra_tokens:
-    util.copy_whitelisted_build_products(api,
+    util.copy_listed_files(api,
         src.join('swiftshader_out'),
-        api.vars.swarming_out_dir.join('swiftshader_out'))
+        api.vars.swarming_out_dir.join('swiftshader_out'),
+        util.DEFAULT_BUILD_PRODUCTS)
 
   if os == 'Mac' and any('SAN' in t for t in extra_tokens):
     # Hardcoding this path because it should only change when we upgrade to a

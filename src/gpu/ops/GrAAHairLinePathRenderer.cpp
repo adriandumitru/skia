@@ -817,7 +817,7 @@ public:
         fPaths.emplace_back(PathData{viewMatrix, path, devClipBounds, capLength});
 
         this->setTransformedBounds(path.getBounds(), viewMatrix, HasAABloat::kYes,
-                                   IsZeroArea::kYes);
+                                   IsHairline::kYes);
     }
 
     const char* name() const override { return "AAHairlineOp"; }
@@ -962,7 +962,7 @@ void AAHairlineOp::onPrepareDraws(Target* target) {
 
     // do lines first
     if (lineCount) {
-        sk_sp<GrGeometryProcessor> lineGP;
+        GrGeometryProcessor* lineGP;
         {
             using namespace GrDefaultGeoProcFactory;
 
@@ -970,22 +970,21 @@ void AAHairlineOp::onPrepareDraws(Target* target) {
             LocalCoords localCoords(fHelper.usesLocalCoords() ? LocalCoords::kUsePosition_Type
                                                               : LocalCoords::kUnused_Type);
             localCoords.fMatrix = geometryProcessorLocalM;
-            lineGP = GrDefaultGeoProcFactory::Make(target->caps().shaderCaps(),
+            lineGP = GrDefaultGeoProcFactory::Make(target->allocator(), target->caps().shaderCaps(),
                                                    color, Coverage::kAttribute_Type, localCoords,
                                                    *geometryProcessorViewM);
         }
 
         sk_sp<const GrBuffer> linesIndexBuffer = get_lines_index_buffer(target->resourceProvider());
 
-        sk_sp<const GrBuffer> vertexBuffer;
-        int firstVertex;
-
         SkASSERT(sizeof(LineVertex) == lineGP->vertexStride());
-        int vertexCount = kLineSegNumVertices * lineCount;
-        LineVertex* verts = reinterpret_cast<LineVertex*>(target->makeVertexSpace(
-                sizeof(LineVertex), vertexCount, &vertexBuffer, &firstVertex));
 
-        if (!verts|| !linesIndexBuffer) {
+        GrMeshDrawOp::PatternHelper helper(target, GrPrimitiveType::kTriangles, sizeof(LineVertex),
+                                           std::move(linesIndexBuffer), kLineSegNumVertices,
+                                           kIdxsPerLineSeg, lineCount, kLineSegsNumInIdxBuffer);
+
+        LineVertex* verts = reinterpret_cast<LineVertex*>(helper.vertices());
+        if (!verts) {
             SkDebugf("Could not allocate vertices\n");
             return;
         }
@@ -994,29 +993,25 @@ void AAHairlineOp::onPrepareDraws(Target* target) {
             add_line(&lines[2*i], toSrc, this->coverage(), &verts);
         }
 
-        GrMesh* mesh = target->allocMesh(GrPrimitiveType::kTriangles);
-        mesh->setIndexedPatterned(std::move(linesIndexBuffer), kIdxsPerLineSeg, kLineSegNumVertices,
-                                  lineCount, kLineSegsNumInIdxBuffer);
-        mesh->setVertexData(std::move(vertexBuffer), firstVertex);
-        target->recordDraw(std::move(lineGP), mesh);
+        helper.recordDraw(target, lineGP);
     }
 
     if (quadCount || conicCount) {
-        sk_sp<GrGeometryProcessor> quadGP(GrQuadEffect::Make(this->color(),
-                                                             *geometryProcessorViewM,
-                                                             GrClipEdgeType::kHairlineAA,
-                                                             target->caps(),
-                                                             *geometryProcessorLocalM,
-                                                             fHelper.usesLocalCoords(),
-                                                             this->coverage()));
+        GrGeometryProcessor* quadGP = GrQuadEffect::Make(target->allocator(), this->color(),
+                                                         *geometryProcessorViewM,
+                                                         GrClipEdgeType::kHairlineAA,
+                                                         target->caps(),
+                                                         *geometryProcessorLocalM,
+                                                         fHelper.usesLocalCoords(),
+                                                         this->coverage());
 
-        sk_sp<GrGeometryProcessor> conicGP(GrConicEffect::Make(this->color(),
-                                                               *geometryProcessorViewM,
-                                                               GrClipEdgeType::kHairlineAA,
-                                                               target->caps(),
-                                                               *geometryProcessorLocalM,
-                                                               fHelper.usesLocalCoords(),
-                                                               this->coverage()));
+        GrGeometryProcessor* conicGP = GrConicEffect::Make(target->allocator(), this->color(),
+                                                           *geometryProcessorViewM,
+                                                           GrClipEdgeType::kHairlineAA,
+                                                           target->caps(),
+                                                           *geometryProcessorLocalM,
+                                                           fHelper.usesLocalCoords(),
+                                                           this->coverage());
 
         sk_sp<const GrBuffer> vertexBuffer;
         int firstVertex;
@@ -1053,7 +1048,7 @@ void AAHairlineOp::onPrepareDraws(Target* target) {
             mesh->setIndexedPatterned(quadsIndexBuffer, kIdxsPerQuad, kQuadNumVertices, quadCount,
                                       kQuadsNumInIdxBuffer);
             mesh->setVertexData(vertexBuffer, firstVertex);
-            target->recordDraw(std::move(quadGP), mesh);
+            target->recordDraw(quadGP, mesh, 1, GrPrimitiveType::kTriangles);
             firstVertex += quadCount * kQuadNumVertices;
         }
 
@@ -1062,7 +1057,7 @@ void AAHairlineOp::onPrepareDraws(Target* target) {
             mesh->setIndexedPatterned(std::move(quadsIndexBuffer), kIdxsPerQuad, kQuadNumVertices,
                                       conicCount, kQuadsNumInIdxBuffer);
             mesh->setVertexData(std::move(vertexBuffer), firstVertex);
-            target->recordDraw(std::move(conicGP), mesh);
+            target->recordDraw(conicGP, mesh, 1, GrPrimitiveType::kTriangles);
         }
     }
 }

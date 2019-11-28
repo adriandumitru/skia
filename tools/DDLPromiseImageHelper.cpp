@@ -8,12 +8,12 @@
 #include "tools/DDLPromiseImageHelper.h"
 
 #include "include/core/SkDeferredDisplayListRecorder.h"
+#include "include/core/SkPicture.h"
+#include "include/core/SkSerialProcs.h"
 #include "include/core/SkYUVAIndex.h"
 #include "include/core/SkYUVASizeInfo.h"
 #include "include/gpu/GrContext.h"
 #include "src/core/SkCachedData.h"
-#include "src/gpu/GrContextPriv.h"
-#include "src/gpu/GrGpu.h"
 #include "src/image/SkImage_Base.h"
 #include "src/image/SkImage_GpuYUVA.h"
 
@@ -67,11 +67,11 @@ static GrBackendTexture create_yuva_texture(GrContext* context, const SkPixmap& 
         }
     }
     if (2 == channelCount) {
-        SkASSERT(kRG_88_SkColorType == pm.colorType());
+        SkASSERT(kR8G8_unorm_SkColorType == pm.colorType());
     }
 #endif
 
-    return context->priv().createBackendTexture(&pm, 1, GrRenderable::kNo, GrProtected::kNo);
+    return context->createBackendTexture(&pm, 1, GrRenderable::kNo, GrProtected::kNo);
 }
 
 void DDLPromiseImageHelper::uploadAllToGPU(GrContext* context) {
@@ -100,7 +100,7 @@ void DDLPromiseImageHelper::uploadAllToGPU(GrContext* context) {
 
             const SkBitmap& bm = info.normalBitmap();
 
-            GrBackendTexture backendTex = context->priv().createBackendTexture(
+            GrBackendTexture backendTex = context->createBackendTexture(
                                                         &bm.pixmap(), 1, GrRenderable::kNo,
                                                         GrProtected::kNo);
 
@@ -275,7 +275,7 @@ int DDLPromiseImageHelper::addImage(SkImage* image) {
             if (kUnknown_SkColorType == colorTypes[texIdx]) {
                 colorTypes[texIdx] = kAlpha_8_SkColorType;
             } else {
-                colorTypes[texIdx] = kRG_88_SkColorType;
+                colorTypes[texIdx] = kR8G8_unorm_SkColorType;
             }
         }
 

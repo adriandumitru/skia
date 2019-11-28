@@ -378,7 +378,7 @@ DEF_TEST(SkSLUnreachable, r) {
 DEF_TEST(SkSLNoReturn, r) {
     test_failure(r,
                  "int foo() { if (2 > 5) return 3; }",
-                 "error: 1: function can exit without returning a value\n1 error\n");
+                 "error: 1: function 'foo' can exit without returning a value\n1 error\n");
 }
 
 DEF_TEST(SkSLBreakOutsideLoop, r) {
@@ -521,4 +521,10 @@ DEF_TEST(SkSLDuplicateOutput, r) {
     test_failure(r,
                  "layout (location=0, index=0) out half4 duplicateOutput;",
                  "error: 1: out location=0, index=0 is reserved for sk_FragColor\n1 error\n");
+}
+
+DEF_TEST(SkSLSpuriousFloat, r) {
+    test_failure(r,
+                 "void main() { float x; x = 1.5 2.5; }",
+                 "error: 1: expected ';', but found '2.5'\n1 error\n");
 }

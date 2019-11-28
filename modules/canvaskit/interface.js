@@ -8,6 +8,11 @@
 CanvasKit.onRuntimeInitialized = function() {
   // All calls to 'this' need to go in externs.js so closure doesn't minify them away.
 
+  // buffer is the underlying ArrayBuffer that is the WASM memory blob.
+  // It was removed from Emscripten proper in https://github.com/emscripten-core/emscripten/pull/8277
+  // but it is convenient to have a reference to, so we add it back in.
+  CanvasKit.buffer = CanvasKit.HEAPU8.buffer;
+
   // Add some helpers for matrices. This is ported from SkMatrix.cpp
   // to save complexity and overhead of going back and forth between
   // C++ and JS layers.
@@ -268,6 +273,26 @@ CanvasKit.onRuntimeInitialized = function() {
     return this;
   };
 
+  // points is either an array of [x, y] where x and y are numbers or
+  // a typed array from Malloc where the even indices will be treated
+  // as x coordinates and the odd indices will be treated as y coordinates.
+  CanvasKit.SkPath.prototype.addPoly = function(points, close) {
+    var ptr;
+    var n;
+    // This was created with CanvasKit.Malloc, so assume the user has
+    // already been filled with data.
+    if (points['_ck']) {
+      ptr = points.byteOffset;
+      n = points.length/2;
+    } else {
+      ptr = copy2dArray(points, CanvasKit.HEAPF32);
+      n = points.length;
+    }
+    this._addPoly(ptr, n, close);
+    CanvasKit._free(ptr);
+    return this;
+  };
+
   CanvasKit.SkPath.prototype.addRect = function() {
     // Takes 1, 2, 4 or 5 args
     //  - SkRect
@@ -402,6 +427,38 @@ CanvasKit.onRuntimeInitialized = function() {
 
   CanvasKit.SkPath.prototype.quadTo = function(cpx, cpy, x, y) {
     this._quadTo(cpx, cpy, x, y);
+    return this;
+  };
+
+ CanvasKit.SkPath.prototype.rArcTo = function(rx, ry, xAxisRotate, useSmallArc, isCCW, dx, dy) {
+    this._rArcTo(rx, ry, xAxisRotate, useSmallArc, isCCW, dx, dy);
+    return this;
+  };
+
+  CanvasKit.SkPath.prototype.rConicTo = function(dx1, dy1, dx2, dy2, w) {
+    this._rConicTo(dx1, dy1, dx2, dy2, w);
+    return this;
+  };
+
+  // These params are all relative
+  CanvasKit.SkPath.prototype.rCubicTo = function(cp1x, cp1y, cp2x, cp2y, x, y) {
+    this._rCubicTo(cp1x, cp1y, cp2x, cp2y, x, y);
+    return this;
+  };
+
+  CanvasKit.SkPath.prototype.rLineTo = function(dx, dy) {
+    this._rLineTo(dx, dy);
+    return this;
+  };
+
+  CanvasKit.SkPath.prototype.rMoveTo = function(dx, dy) {
+    this._rMoveTo(dx, dy);
+    return this;
+  };
+
+  // These params are all relative
+  CanvasKit.SkPath.prototype.rQuadTo = function(cpx, cpy, x, y) {
+    this._rQuadTo(cpx, cpy, x, y);
     return this;
   };
 
@@ -590,16 +647,35 @@ CanvasKit.onRuntimeInitialized = function() {
 
   }
 
+  // points is either an array of [x, y] where x and y are numbers or
+  // a typed array from Malloc where the even indices will be treated
+  // as x coordinates and the odd indices will be treated as y coordinates.
+  CanvasKit.SkCanvas.prototype.drawPoints = function(mode, points, paint) {
+    var ptr;
+    var n;
+    // This was created with CanvasKit.Malloc, so assume the user has
+    // already been filled with data.
+    if (points['_ck']) {
+      ptr = points.byteOffset;
+      n = points.length/2;
+    } else {
+      ptr = copy2dArray(points, CanvasKit.HEAPF32);
+      n = points.length;
+    }
+    this._drawPoints(mode, ptr, n, paint);
+    CanvasKit._free(ptr);
+  }
+
   // str can be either a text string or a ShapedText object
   CanvasKit.SkCanvas.prototype.drawText = function(str, x, y, paint, font) {
     if (typeof str === 'string') {
       // lengthBytesUTF8 and stringToUTF8Array are defined in the emscripten
       // JS.  See https://kripken.github.io/emscripten-site/docs/api_reference/preamble.js.html#stringToUTF8
-      // Add 1 for null terminator
-      var strLen = lengthBytesUTF8(str) + 1;
-      var strPtr = CanvasKit._malloc(strLen);
-
-      stringToUTF8(str, strPtr, strLen);
+      var strLen = lengthBytesUTF8(str);
+      // Add 1 for null terminator, which we need when copying/converting, but can ignore
+      // when we call into Skia.
+      var strPtr = CanvasKit._malloc(strLen + 1);
+      stringToUTF8(str, strPtr, strLen + 1);
       this._drawSimpleText(strPtr, strLen, x, y, font, paint);
     } else {
       this._drawShapedText(str, x, y, paint);
@@ -629,7 +705,7 @@ CanvasKit.onRuntimeInitialized = function() {
 
     // The first typed array is just a view into memory. Because we will
     // be free-ing that, we call slice to make a persistent copy.
-    var pixels = new Uint8Array(CanvasKit.HEAPU8.buffer, pptr, len).slice();
+    var pixels = new Uint8Array(CanvasKit.buffer, pptr, len).slice();
     CanvasKit._free(pptr);
     return pixels;
   }
@@ -704,12 +780,43 @@ CanvasKit.onRuntimeInitialized = function() {
     return retVal;
   }
 
+  // arguments should all be arrayBuffers or be an array of arrayBuffers.
+  CanvasKit.SkFontMgr.FromData = function() {
+    if (!arguments.length) {
+      SkDebug('Could not make SkFontMgr from no font sources');
+      return null;
+    }
+    var fonts = arguments;
+    if (fonts.length === 1 && Array.isArray(fonts[0])) {
+      fonts = arguments[0];
+    }
+    if (!fonts.length) {
+      SkDebug('Could not make SkFontMgr from no font sources');
+      return null;
+    }
+    var dPtrs = [];
+    var sizes = [];
+    for (var i = 0; i < fonts.length; i++) {
+      var data = new Uint8Array(fonts[i]);
+      var dptr = copy1dArray(data, CanvasKit.HEAPU8);
+      dPtrs.push(dptr);
+      sizes.push(data.byteLength);
+    }
+    // Pointers are 32 bit unsigned ints
+    var datasPtr = copy1dArray(dPtrs, CanvasKit.HEAPU32);
+    var sizesPtr = copy1dArray(sizes, CanvasKit.HEAPU32);
+    var fm = CanvasKit.SkFontMgr._fromData(datasPtr, sizesPtr, fonts.length);
+    // The SkFontMgr has taken ownership of the bytes we allocated in the for loop.
+    CanvasKit._free(datasPtr);
+    CanvasKit._free(sizesPtr);
+    return fm;
+  }
+
   // fontData should be an arrayBuffer
   CanvasKit.SkFontMgr.prototype.MakeTypefaceFromData = function(fontData) {
     var data = new Uint8Array(fontData);
 
-    var fptr = CanvasKit._malloc(data.byteLength);
-    CanvasKit.HEAPU8.set(data, fptr);
+    var fptr = copy1dArray(data, CanvasKit.HEAPU8);
     var font = this._makeTypefaceFromData(fptr, data.byteLength);
     if (!font) {
       SkDebug('Could not decode font data');
@@ -928,6 +1035,20 @@ CanvasKit.MakeSkDashPathEffect = function(intervals, phase) {
   var dpe = CanvasKit._MakeSkDashPathEffect(ptr, intervals.length, phase);
   CanvasKit._free(ptr);
   return dpe;
+}
+
+// data is a TypedArray or ArrayBuffer e.g. from fetch().then(resp.arrayBuffer())
+CanvasKit.MakeAnimatedImageFromEncoded = function(data) {
+  data = new Uint8Array(data);
+
+  var iptr = CanvasKit._malloc(data.byteLength);
+  CanvasKit.HEAPU8.set(data, iptr);
+  var img = CanvasKit._decodeAnimatedImage(iptr, data.byteLength);
+  if (!img) {
+    SkDebug('Could not decode animated image');
+    return null;
+  }
+  return img;
 }
 
 // data is a TypedArray or ArrayBuffer e.g. from fetch().then(resp.arrayBuffer())

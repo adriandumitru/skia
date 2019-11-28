@@ -4,21 +4,22 @@
 
 
 DEPS = [
+  'recipe_engine/context',
   'recipe_engine/file',
   'recipe_engine/json',
   'recipe_engine/path',
   'recipe_engine/properties',
   'recipe_engine/raw_io',
   'recipe_engine/step',
+  'run',
+  'vars',
 ]
 
 
 def RunSteps(api):
-  buildername = api.properties['buildername']
-  issue = api.properties.get('patch_issue')
-  patchset = api.properties.get('patch_set')
-  if not issue or not patchset:
-    raise Exception('%s can only be run as a trybot.' % buildername)
+  api.vars.setup()
+  if not api.vars.is_trybot:
+    raise Exception('%s can only be run as a trybot.' % api.vars.builder_name)
 
   infrabots_dir = api.path['start_dir'].join('skia', 'infra', 'bots')
   trigger_wait_g3_script = infrabots_dir.join('g3_compile',
@@ -28,12 +29,14 @@ def RunSteps(api):
   output_file = output_dir.join('output_file')
   # Trigger a compile task and wait for it to complete.
   cmd = ['python', trigger_wait_g3_script,
-         '--issue', issue,
-         '--patchset', patchset,
+         '--issue', api.vars.issue,
+         '--patchset', api.vars.patchset,
          '--output_file', output_file,
+         '--builder_name', api.vars.builder_name,
         ]
   try:
-    api.step('Trigger and wait for g3 compile task', cmd=cmd)
+    with api.context(cwd=api.path['start_dir'].join('skia')):
+      api.run(api.step, 'Trigger and wait for g3 compile task', cmd=cmd)
   except api.step.StepFailure as e:
     # Add CL link if it exists in the output_file.
     task_json = api.file.read_json(
@@ -47,26 +50,30 @@ def RunSteps(api):
 def GenTests(api):
   yield(
     api.test('g3_compile_trybot') +
+    api.properties.tryserver(
+          gerrit_project='skia',
+          gerrit_url='https://skia-review.googlesource.com/',
+    ) +
     api.properties(
         buildername='Build-Debian9-Clang-TAP-Presubmit-G3_Framework',
         path_config='kitchen',
         swarm_out_dir='[SWARM_OUT_DIR]',
         repository='https://skia.googlesource.com/skia.git',
-        patch_issue=1234,
-        patch_set=1,
         revision='abc123',
     )
   )
 
   yield(
     api.test('g3_compile_trybot_failure') +
+    api.properties.tryserver(
+          gerrit_project='skia',
+          gerrit_url='https://skia-review.googlesource.com/',
+    ) +
     api.properties(
         buildername='Build-Debian9-Clang-TAP-Presubmit-G3_Framework',
         path_config='kitchen',
         swarm_out_dir='[SWARM_OUT_DIR]',
         repository='https://skia.googlesource.com/skia.git',
-        patch_issue=1234,
-        patch_set=1,
         revision='abc123',
     ) +
     api.step_data('Trigger and wait for g3 compile task', retcode=1)

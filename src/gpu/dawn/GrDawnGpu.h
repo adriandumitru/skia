@@ -9,6 +9,7 @@
 #define GrDawnGpu_DEFINED
 
 #include "src/gpu/GrGpu.h"
+#include "src/gpu/GrProgramDesc.h"
 #include "dawn/dawncpp.h"
 #include "src/core/SkLRUCache.h"
 #include "src/gpu/dawn/GrDawnRingBuffer.h"
@@ -26,26 +27,24 @@ namespace SkSL {
 
 class GrDawnGpu : public GrGpu {
 public:
-    static sk_sp<GrGpu> Make(const dawn::Device& device, const GrContextOptions&, GrContext*);
-    GrDawnGpu(GrContext* context, const GrContextOptions& options, const dawn::Device& device);
+    static sk_sp<GrGpu> Make(const wgpu::Device& device, const GrContextOptions&, GrContext*);
+    GrDawnGpu(GrContext* context, const GrContextOptions& options, const wgpu::Device& device);
 
     ~GrDawnGpu() override;
 
     void disconnect(DisconnectType) override;
 
-    const dawn::Device& device() const { return fDevice; }
-    const dawn::Queue&  queue() const { return fQueue; }
+    const wgpu::Device& device() const { return fDevice; }
+    const wgpu::Queue&  queue() const { return fQueue; }
 
     void xferBarrier(GrRenderTarget*, GrXferBarrierType) override {}
 
-    GrBackendTexture createBackendTexture(int w, int h,
-                                          const GrBackendFormat &,
-                                          GrMipMapped,
-                                          GrRenderable,
-                                          const void* pixels,
-                                          size_t rowBytes,
-                                          const SkColor4f* color,
-                                          GrProtected isProtected) override;
+    GrBackendTexture onCreateBackendTexture(SkISize,
+                                            const GrBackendFormat&,
+                                            GrRenderable,
+                                            const BackendTextureData* data,
+                                            int numMipLevels,
+                                            GrProtected isProtected) override;
     void deleteBackendTexture(const GrBackendTexture&) override;
 #if GR_TEST_UTILS
     bool isTestingOnlyBackendTexture(const GrBackendTexture&) const override;
@@ -63,10 +62,10 @@ public:
                                                                 int numStencilSamples) override;
 
     GrOpsRenderPass* getOpsRenderPass(
-            GrRenderTarget*, GrSurfaceOrigin, const SkRect& bounds,
+            GrRenderTarget*, GrSurfaceOrigin, const SkIRect& bounds,
             const GrOpsRenderPass::LoadAndStoreInfo&,
             const GrOpsRenderPass::StencilLoadAndStoreInfo&,
-            const SkTArray<GrTextureProxy*, true>& sampledProxies) override;
+            const SkTArray<GrSurfaceProxy*, true>& sampledProxies) override;
 
     SkSL::Compiler* shaderCompiler() const {
         return fCompiler.get();
@@ -78,32 +77,27 @@ public:
     bool waitFence(GrFence, uint64_t timeout) override;
     void deleteFence(GrFence) const override;
 
-    sk_sp<GrSemaphore> SK_WARN_UNUSED_RESULT makeSemaphore(bool isOwned = true) override;
-    sk_sp<GrSemaphore> wrapBackendSemaphore(const GrBackendSemaphore& semaphore,
-                                            GrResourceProvider::SemaphoreWrapType wrapType,
-                                            GrWrapOwnership ownership) override;
-    void insertSemaphore(sk_sp<GrSemaphore> semaphore) override;
-    void waitSemaphore(sk_sp<GrSemaphore> semaphore) override;
+    std::unique_ptr<GrSemaphore> SK_WARN_UNUSED_RESULT makeSemaphore(bool isOwned = true) override;
+    std::unique_ptr<GrSemaphore> wrapBackendSemaphore(
+            const GrBackendSemaphore& semaphore,
+            GrResourceProvider::SemaphoreWrapType wrapType,
+            GrWrapOwnership ownership) override;
+    void insertSemaphore(GrSemaphore* semaphore) override;
+    void waitSemaphore(GrSemaphore* semaphore) override;
     void checkFinishProcs() override;
 
-    sk_sp<GrSemaphore> prepareTextureForCrossContextUsage(GrTexture*) override;
+    std::unique_ptr<GrSemaphore> prepareTextureForCrossContextUsage(GrTexture*) override;
 
-    sk_sp<GrDawnProgram> getOrCreateRenderPipeline(GrRenderTarget*,
-                                                   GrSurfaceOrigin origin,
-                                                   const GrPipeline&,
-                                                   const GrPrimitiveProcessor&,
-                                                   const GrTextureProxy* const* primProcProxies,
-                                                   bool hasPoints,
-                                                   GrPrimitiveType primitiveType);
+    sk_sp<GrDawnProgram> getOrCreateRenderPipeline(GrRenderTarget*, const GrProgramInfo&);
 
-    dawn::Sampler getOrCreateSampler(const GrSamplerState& samplerState);
+    wgpu::Sampler getOrCreateSampler(const GrSamplerState& samplerState);
 
     GrDawnRingBuffer::Slice allocateUniformRingBufferSlice(int size);
     GrDawnStagingBuffer* getStagingBuffer(size_t size);
     GrDawnStagingManager* getStagingManager() { return &fStagingManager; }
-    dawn::CommandEncoder getCopyEncoder();
+    wgpu::CommandEncoder getCopyEncoder();
     void flushCopyEncoder();
-    void appendCommandBuffer(dawn::CommandBuffer commandBuffer);
+    void appendCommandBuffer(wgpu::CommandBuffer commandBuffer);
 
 private:
     void onResetContext(uint32_t resetBits) override {}
@@ -154,24 +148,24 @@ private:
                               GrColorType surfaceColorType, GrColorType bufferColorType,
                               GrGpuBuffer* transferBuffer, size_t offset) override;
 
-    void onResolveRenderTarget(GrRenderTarget* target) override {
-    }
+    void onResolveRenderTarget(GrRenderTarget*, const SkIRect&, GrSurfaceOrigin,
+                               ForExternalIO) override {}
 
     bool onRegenerateMipMapLevels(GrTexture*) override;
 
     bool onCopySurface(GrSurface* dst, GrSurface* src,
                        const SkIRect& srcRect, const SkIPoint& dstPoint) override;
 
-    void onFinishFlush(GrSurfaceProxy*[], int n, SkSurface::BackendSurfaceAccess access,
+    bool onFinishFlush(GrSurfaceProxy*[], int n, SkSurface::BackendSurfaceAccess access,
                        const GrFlushInfo& info, const GrPrepareForExternalIORequests&) override;
 
-    dawn::Device                                    fDevice;
-    dawn::Queue                                     fQueue;
+    wgpu::Device                                    fDevice;
+    wgpu::Queue                                     fQueue;
     std::unique_ptr<SkSL::Compiler>                 fCompiler;
     std::unique_ptr<GrDawnOpsRenderPass>            fOpsRenderPass;
     GrDawnRingBuffer                                fUniformRingBuffer;
-    dawn::CommandEncoder                            fCopyEncoder;
-    std::vector<dawn::CommandBuffer>                fCommandBuffers;
+    wgpu::CommandEncoder                            fCopyEncoder;
+    std::vector<wgpu::CommandBuffer>                fCommandBuffers;
 
     struct ProgramDescHash {
         uint32_t operator()(const GrProgramDesc& desc) const {
@@ -186,7 +180,7 @@ private:
     };
 
     SkLRUCache<GrProgramDesc, sk_sp<GrDawnProgram>, ProgramDescHash>    fRenderPipelineCache;
-    std::unordered_map<GrSamplerState, dawn::Sampler, SamplerHash> fSamplers;
+    std::unordered_map<GrSamplerState, wgpu::Sampler, SamplerHash> fSamplers;
     GrDawnStagingManager fStagingManager;
 
     typedef GrGpu INHERITED;

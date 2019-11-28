@@ -109,7 +109,8 @@ public:
              const GrGLInterface* glInterface);
 
     bool isFormatSRGB(const GrBackendFormat&) const override;
-    bool isFormatCompressed(const GrBackendFormat&) const override;
+    bool isFormatCompressed(const GrBackendFormat&,
+                            SkImage::CompressionType* compressionType = nullptr) const override;
 
     bool isFormatTexturableAndUploadable(GrColorType, const GrBackendFormat&) const override;
     bool isFormatTexturable(const GrBackendFormat&) const override;
@@ -132,6 +133,9 @@ public:
         return this->maxRenderTargetSampleCount(format.asGLFormat());
     }
     int maxRenderTargetSampleCount(GrGLFormat) const;
+
+    size_t bytesPerPixel(GrGLFormat) const;
+    size_t bytesPerPixel(const GrBackendFormat&) const override;
 
     bool isFormatCopyable(const GrBackendFormat&) const override;
 
@@ -167,11 +171,13 @@ public:
                                              GrGLenum* externalType) const;
 
     /**
-     * Gets the external format, type, and bytes per pixel to use when uploading zeros via
-     * glTexSubImage...() to clear the texture at creation.
+     * Gets the external format, type, and bytes per pixel to use when uploading solid color data
+     * via glTexSubImage...() to clear the texture at creation.
      */
-    void getTexSubImageZeroFormatTypeAndBpp(GrGLFormat format, GrGLenum* externalFormat,
-                                            GrGLenum* externalType, size_t* bpp) const;
+    void getTexSubImageDefaultFormatTypeAndColorType(GrGLFormat format,
+                                                     GrGLenum* externalFormat,
+                                                     GrGLenum* externalType,
+                                                     GrColorType* colorType) const;
 
     void getReadPixelsFormat(GrGLFormat surfaceFormat, GrColorType surfaceColorType,
                              GrColorType memoryColorType, GrGLenum* externalFormat,
@@ -404,7 +410,12 @@ public:
 
     bool samplerObjectSupport() const { return fSamplerObjectSupport; }
 
+    bool tiledRenderingSupport() const { return fTiledRenderingSupport; }
+
     bool fbFetchRequiresEnablePerSample() const { return fFBFetchRequiresEnablePerSample; }
+
+    /* Is there support for enabling/disabling sRGB writes for sRGB-capable color buffers? */
+    bool srgbWriteControl() const { return fSRGBWriteControl; }
 
     GrColorType getYUVAColorTypeFromBackendFormat(const GrBackendFormat&,
                                                   bool isAlphaChannel) const override;
@@ -413,6 +424,8 @@ public:
 
     GrSwizzle getTextureSwizzle(const GrBackendFormat&, GrColorType) const override;
     GrSwizzle getOutputSwizzle(const GrBackendFormat&, GrColorType) const override;
+
+    GrProgramDesc makeDesc(const GrRenderTarget*, const GrProgramInfo&) const override;
 
 #if GR_TEST_UTILS
     GrGLStandard standard() const { return fStandard; }
@@ -434,14 +447,13 @@ private:
     bool hasPathRenderingSupport(const GrGLContextInfo&, const GrGLInterface*);
 
     struct FormatWorkarounds {
-        bool fDisableTextureRedForMesa = false;
         bool fDisableSRGBRenderWithMSAAForMacAMD = false;
-        bool fDisablePerFormatTextureStorageForCommandBufferES2 = false;
-        bool fDisableNonRedSingleChannelTexStorageForANGLEGL = false;
+        bool fDisableRGBA16FTexStorageForCrBug1008003 = false;
         bool fDisableBGRATextureStorageForIntelWindowsES = false;
         bool fDisableRGB8ForMali400 = false;
         bool fDisableLuminance16F = false;
-        bool fDisableAlpha8Renderable = false;
+        bool fDontDisableTexStorageOnAndroid = false;
+        bool fDisallowDirectRG8ReadPixels = false;
     };
 
     void applyDriverCorrectnessWorkarounds(const GrGLContextInfo&, const GrContextOptions&,
@@ -504,7 +516,9 @@ private:
     bool fProgramBinarySupport : 1;
     bool fProgramParameterSupport : 1;
     bool fSamplerObjectSupport : 1;
+    bool fTiledRenderingSupport : 1;
     bool fFBFetchRequiresEnablePerSample : 1;
+    bool fSRGBWriteControl : 1;
 
     // Driver workarounds
     bool fDoManualMipmapping : 1;
@@ -642,11 +656,15 @@ private:
         GrGLenum fInternalFormatForRenderbuffer = 0;
 
         // Default values to use along with fInternalFormatForTexImageOrStorage for function
-        // glTexImage2D when not input providing data (passing nullptr). Not defined for compressed
-        // formats. Also used to upload zeros to initially clear a texture.
+        // glTexImage2D when not input providing data (passing nullptr) or when clearing it by
+        // uploading a block of solid color data. Not defined for compressed formats.
         GrGLenum fDefaultExternalFormat = 0;
         GrGLenum fDefaultExternalType = 0;
-        GrGLenum fTexSubImageZeroDataBpp = 0;
+        // When the above two values are used to initialize a texture by uploading cleared data to
+        // it the data should be of this color type.
+        GrColorType fDefaultColorType = GrColorType::kUnknown;
+        // This value is only valid for regular formats. Compressed formats will be 0.
+        GrGLenum fBytesPerPixel = 0;
 
         enum {
             // This indicates that a stencil format has not yet been determined for the config.

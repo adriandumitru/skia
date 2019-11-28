@@ -53,7 +53,7 @@ static void draw_donut(SkCanvas* canvas, const SkRect& r, const SkPaint& p) {
     rect.inset(STROKE_WIDTH/2, STROKE_WIDTH/2);
 
     path.addRect(rect);
-    path.setFillType(SkPath::kEvenOdd_FillType);
+    path.setFillType(SkPathFillType::kEvenOdd);
 
     canvas->drawPath(path, p);
 }
@@ -71,7 +71,7 @@ static void draw_donut_skewed(SkCanvas* canvas, const SkRect& r, const SkPaint& 
     rect.offset(7, -7);
 
     path.addRect(rect);
-    path.setFillType(SkPath::kEvenOdd_FillType);
+    path.setFillType(SkPathFillType::kEvenOdd);
 
     canvas->drawPath(path, p);
 }
@@ -421,6 +421,9 @@ private:
                     }
                     auto rect = SkRect::MakeXYWH(pad, pad, w, h);
                     SkPaint paint;
+                    // Color doesn't matter if we're rendering to A8 but does if we promoted to
+                    // RGBA above.
+                    paint.setColor(SK_ColorWHITE);
                     paint.setMaskFilter(SkMaskFilter::MakeBlur(kNormal_SkBlurStyle, sigma));
                     surf->getCanvas()->drawRect(rect, paint);
                     fActualMasks[sigmaIdx][heightIdx][widthIdx] = surf->makeImageSnapshot();

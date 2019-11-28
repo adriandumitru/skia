@@ -4,7 +4,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# This assumes it is being run inside a docker container of emsdk-release
+# This assumes it is being run inside a docker container of cmake-release
 # and a Skia checkout has been mounted at /SRC and the output directory
 # has been mounted at /OUT
 
@@ -27,6 +27,8 @@ cd $SKIA_DIR
 gn gen out/CMAKE --args='is_debug=false' --ide=json --json-ide-script=../../gn/gn_to_cmake.py
 
 cd $SKIA_DIR/out/CMAKE
+export CC=/usr/local/bin/clang
+export CXX=/usr/local/bin/clang++
 cmake -G"CodeBlocks - Unix Makefiles" .
 cmake --build . --parallel 8
 

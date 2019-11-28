@@ -40,23 +40,15 @@ void GrVkCommandBuffer::invalidateState() {
     }
 }
 
-void GrVkCommandBuffer::freeGPUData(GrVkGpu* gpu) const {
+void GrVkCommandBuffer::freeGPUData(GrVkGpu* gpu, VkCommandPool cmdPool) const {
     TRACE_EVENT0("skia.gpu", TRACE_FUNC);
     SkASSERT(!fIsActive);
-    for (int i = 0; i < fTrackedResources.count(); ++i) {
-        fTrackedResources[i]->notifyRemovedFromCommandBuffer();
-        fTrackedResources[i]->unref(gpu);
-    }
+    SkASSERT(!fTrackedResources.count());
+    SkASSERT(!fTrackedRecycledResources.count());
+    SkASSERT(cmdPool != VK_NULL_HANDLE);
+    SkASSERT(!this->isWrapped());
 
-    for (int i = 0; i < fTrackedRecycledResources.count(); ++i) {
-        fTrackedRecycledResources[i]->notifyRemovedFromCommandBuffer();
-        fTrackedRecycledResources[i]->recycle(const_cast<GrVkGpu*>(gpu));
-    }
-
-    if (!this->isWrapped()) {
-        GR_VK_CALL(gpu->vkInterface(), FreeCommandBuffers(gpu->device(), fCmdPool->vkCommandPool(),
-                                                          1, &fCmdBuffer));
-    }
+    GR_VK_CALL(gpu->vkInterface(), FreeCommandBuffers(gpu->device(), cmdPool, 1, &fCmdBuffer));
 
     this->onFreeGPUData(gpu);
 }
@@ -260,6 +252,9 @@ void GrVkCommandBuffer::clearAttachments(const GrVkGpu* gpu,
                                                        attachments,
                                                        numRects,
                                                        clearRects));
+    if (gpu->vkCaps().mustInvalidatePrimaryCmdBufferStateAfterClearAttachments()) {
+        this->invalidateState();
+    }
 }
 
 void GrVkCommandBuffer::bindDescriptorSets(const GrVkGpu* gpu,
@@ -373,27 +368,26 @@ GrVkPrimaryCommandBuffer::~GrVkPrimaryCommandBuffer() {
     SkASSERT(!fActiveRenderPass);
 }
 
-GrVkPrimaryCommandBuffer* GrVkPrimaryCommandBuffer::Create(const GrVkGpu* gpu,
-                                                           GrVkCommandPool* cmdPool) {
+GrVkPrimaryCommandBuffer* GrVkPrimaryCommandBuffer::Create(GrVkGpu* gpu,
+                                                           VkCommandPool cmdPool) {
     const VkCommandBufferAllocateInfo cmdInfo = {
         VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,   // sType
         nullptr,                                          // pNext
-        cmdPool->vkCommandPool(),                         // commandPool
+        cmdPool,                                          // commandPool
         VK_COMMAND_BUFFER_LEVEL_PRIMARY,                  // level
         1                                                 // bufferCount
     };
 
     VkCommandBuffer cmdBuffer;
-    VkResult err = GR_VK_CALL(gpu->vkInterface(), AllocateCommandBuffers(gpu->device(),
-                                                                         &cmdInfo,
-                                                                         &cmdBuffer));
+    VkResult err;
+    GR_VK_CALL_RESULT(gpu, err, AllocateCommandBuffers(gpu->device(), &cmdInfo, &cmdBuffer));
     if (err) {
         return nullptr;
     }
-    return new GrVkPrimaryCommandBuffer(cmdBuffer, cmdPool);
+    return new GrVkPrimaryCommandBuffer(cmdBuffer);
 }
 
-void GrVkPrimaryCommandBuffer::begin(const GrVkGpu* gpu) {
+void GrVkPrimaryCommandBuffer::begin(GrVkGpu* gpu) {
     SkASSERT(!fIsActive);
     VkCommandBufferBeginInfo cmdBufferBeginInfo;
     memset(&cmdBufferBeginInfo, 0, sizeof(VkCommandBufferBeginInfo));
@@ -402,8 +396,7 @@ void GrVkPrimaryCommandBuffer::begin(const GrVkGpu* gpu) {
     cmdBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     cmdBufferBeginInfo.pInheritanceInfo = nullptr;
 
-    GR_VK_CALL_ERRCHECK(gpu->vkInterface(), BeginCommandBuffer(fCmdBuffer,
-                                                               &cmdBufferBeginInfo));
+    GR_VK_CALL_ERRCHECK(gpu, BeginCommandBuffer(fCmdBuffer, &cmdBufferBeginInfo));
     fIsActive = true;
 }
 
@@ -413,21 +406,26 @@ void GrVkPrimaryCommandBuffer::end(GrVkGpu* gpu) {
 
     this->submitPipelineBarriers(gpu);
 
-    GR_VK_CALL_ERRCHECK(gpu->vkInterface(), EndCommandBuffer(fCmdBuffer));
+    GR_VK_CALL_ERRCHECK(gpu, EndCommandBuffer(fCmdBuffer));
     this->invalidateState();
     fIsActive = false;
     fHasWork = false;
 }
 
-void GrVkPrimaryCommandBuffer::beginRenderPass(const GrVkGpu* gpu,
+bool GrVkPrimaryCommandBuffer::beginRenderPass(GrVkGpu* gpu,
                                                const GrVkRenderPass* renderPass,
                                                const VkClearValue clearValues[],
-                                               const GrVkRenderTarget& target,
+                                               GrVkRenderTarget* target,
                                                const SkIRect& bounds,
                                                bool forSecondaryCB) {
     SkASSERT(fIsActive);
     SkASSERT(!fActiveRenderPass);
-    SkASSERT(renderPass->isCompatible(target));
+    SkASSERT(renderPass->isCompatible(*target));
+
+    const GrVkFramebuffer* framebuffer = target->getFramebuffer();
+    if (!framebuffer) {
+        return false;
+    }
 
     this->addingWork(gpu);
 
@@ -440,7 +438,7 @@ void GrVkPrimaryCommandBuffer::beginRenderPass(const GrVkGpu* gpu,
     beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     beginInfo.pNext = nullptr;
     beginInfo.renderPass = renderPass->vkRenderPass();
-    beginInfo.framebuffer = target.framebuffer()->framebuffer();
+    beginInfo.framebuffer = framebuffer->framebuffer();
     beginInfo.renderArea = renderArea;
     beginInfo.clearValueCount = renderPass->clearValueCount();
     beginInfo.pClearValues = clearValues;
@@ -451,7 +449,8 @@ void GrVkPrimaryCommandBuffer::beginRenderPass(const GrVkGpu* gpu,
     GR_VK_CALL(gpu->vkInterface(), CmdBeginRenderPass(fCmdBuffer, &beginInfo, contents));
     fActiveRenderPass = renderPass;
     this->addResource(renderPass);
-    target.addResources(*this);
+    target->addResources(*this);
+    return true;
 }
 
 void GrVkPrimaryCommandBuffer::endRenderPass(const GrVkGpu* gpu) {
@@ -467,7 +466,6 @@ void GrVkPrimaryCommandBuffer::executeCommands(const GrVkGpu* gpu,
     // The Vulkan spec allows secondary command buffers to be executed on a primary command buffer
     // if the command pools both were created from were created with the same queue family. However,
     // we currently always create them from the same pool.
-    SkASSERT(buffer->commandPool() == fCmdPool);
     SkASSERT(fIsActive);
     SkASSERT(!buffer->fIsActive);
     SkASSERT(fActiveRenderPass);
@@ -482,7 +480,7 @@ void GrVkPrimaryCommandBuffer::executeCommands(const GrVkGpu* gpu,
     this->invalidateState();
 }
 
-static void submit_to_queue(const GrVkInterface* interface,
+static void submit_to_queue(GrVkGpu* gpu,
                             VkQueue queue,
                             VkFence fence,
                             uint32_t waitCount,
@@ -512,11 +510,11 @@ static void submit_to_queue(const GrVkInterface* interface,
     submitInfo.pCommandBuffers = commandBuffers;
     submitInfo.signalSemaphoreCount = signalCount;
     submitInfo.pSignalSemaphores = signalSemaphores;
-    GR_VK_CALL_ERRCHECK(interface, QueueSubmit(queue, 1, &submitInfo, fence));
+    GR_VK_CALL_ERRCHECK(gpu, QueueSubmit(queue, 1, &submitInfo, fence));
 }
 
 void GrVkPrimaryCommandBuffer::submitToQueue(
-        const GrVkGpu* gpu,
+        GrVkGpu* gpu,
         VkQueue queue,
         GrVkGpu::SyncQueue sync,
         SkTArray<GrVkSemaphore::Resource*>& signalSemaphores,
@@ -541,8 +539,7 @@ void GrVkPrimaryCommandBuffer::submitToQueue(
     if (0 == signalCount && 0 == waitCount) {
         // This command buffer has no dependent semaphores so we can simply just submit it to the
         // queue with no worries.
-        submit_to_queue(gpu->vkInterface(), queue, fSubmitFence, 0, nullptr, nullptr, 1,
-                        &fCmdBuffer, 0, nullptr,
+        submit_to_queue(gpu, queue, fSubmitFence, 0, nullptr, nullptr, 1, &fCmdBuffer, 0, nullptr,
                         gpu->protectedContext() ? GrProtected::kYes : GrProtected::kNo);
     } else {
         SkTArray<VkSemaphore> vkSignalSems(signalCount);
@@ -562,8 +559,8 @@ void GrVkPrimaryCommandBuffer::submitToQueue(
                 vkWaitStages.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
             }
         }
-        submit_to_queue(gpu->vkInterface(), queue, fSubmitFence, vkWaitSems.count(),
-                        vkWaitSems.begin(), vkWaitStages.begin(), 1, &fCmdBuffer,
+        submit_to_queue(gpu, queue, fSubmitFence, vkWaitSems.count(), vkWaitSems.begin(),
+                        vkWaitStages.begin(), 1, &fCmdBuffer,
                         vkSignalSems.count(), vkSignalSems.begin(),
                         gpu->protectedContext() ? GrProtected::kYes : GrProtected::kNo);
         for (int i = 0; i < signalCount; ++i) {
@@ -577,11 +574,10 @@ void GrVkPrimaryCommandBuffer::submitToQueue(
     if (GrVkGpu::kForce_SyncQueue == sync) {
         err = GR_VK_CALL(gpu->vkInterface(),
                          WaitForFences(gpu->device(), 1, &fSubmitFence, true, UINT64_MAX));
-        if (VK_TIMEOUT == err) {
-            SkDebugf("Fence failed to signal: %d\n", err);
+        if (VK_SUCCESS != err) {
+            SkDebugf("Fence failed: %d\n", err);
             SK_ABORT("failing");
         }
-        SkASSERT(!err);
 
         fFinishedProcs.reset();
 
@@ -625,10 +621,9 @@ void GrVkPrimaryCommandBuffer::onReleaseResources(GrVkGpu* gpu) {
     fFinishedProcs.reset();
 }
 
-void GrVkPrimaryCommandBuffer::recycleSecondaryCommandBuffers(GrVkGpu* gpu) {
+void GrVkPrimaryCommandBuffer::recycleSecondaryCommandBuffers(GrVkCommandPool* cmdPool) {
     for (int i = 0; i < fSecondaryCommandBuffers.count(); ++i) {
-        SkASSERT(fSecondaryCommandBuffers[i]->commandPool() == fCmdPool);
-        fSecondaryCommandBuffers[i].release()->recycle(gpu);
+        fSecondaryCommandBuffers[i].release()->recycle(cmdPool);
     }
     fSecondaryCommandBuffers.reset();
 }
@@ -845,9 +840,7 @@ void GrVkPrimaryCommandBuffer::onFreeGPUData(GrVkGpu* gpu) const {
     if (VK_NULL_HANDLE != fSubmitFence) {
         GR_VK_CALL(gpu->vkInterface(), DestroyFence(gpu->device(), fSubmitFence, nullptr));
     }
-    for (const auto& buffer : fSecondaryCommandBuffers) {
-        buffer->freeGPUData(gpu);
-    }
+    SkASSERT(!fSecondaryCommandBuffers.count());
 }
 
 void GrVkPrimaryCommandBuffer::onAbandonGPUData() const {
@@ -861,7 +854,7 @@ void GrVkPrimaryCommandBuffer::onAbandonGPUData() const {
 // SecondaryCommandBuffer
 ////////////////////////////////////////////////////////////////////////////////
 
-GrVkSecondaryCommandBuffer* GrVkSecondaryCommandBuffer::Create(const GrVkGpu* gpu,
+GrVkSecondaryCommandBuffer* GrVkSecondaryCommandBuffer::Create(GrVkGpu* gpu,
                                                                GrVkCommandPool* cmdPool) {
     SkASSERT(cmdPool);
     const VkCommandBufferAllocateInfo cmdInfo = {
@@ -873,20 +866,19 @@ GrVkSecondaryCommandBuffer* GrVkSecondaryCommandBuffer::Create(const GrVkGpu* gp
     };
 
     VkCommandBuffer cmdBuffer;
-    VkResult err = GR_VK_CALL(gpu->vkInterface(), AllocateCommandBuffers(gpu->device(),
-                                                                         &cmdInfo,
-                                                                         &cmdBuffer));
+    VkResult err;
+    GR_VK_CALL_RESULT(gpu, err, AllocateCommandBuffers(gpu->device(), &cmdInfo, &cmdBuffer));
     if (err) {
         return nullptr;
     }
-    return new GrVkSecondaryCommandBuffer(cmdBuffer, cmdPool);
+    return new GrVkSecondaryCommandBuffer(cmdBuffer, false);
 }
 
 GrVkSecondaryCommandBuffer* GrVkSecondaryCommandBuffer::Create(VkCommandBuffer cmdBuffer) {
-    return new GrVkSecondaryCommandBuffer(cmdBuffer, nullptr);
+    return new GrVkSecondaryCommandBuffer(cmdBuffer, true);
 }
 
-void GrVkSecondaryCommandBuffer::begin(const GrVkGpu* gpu, const GrVkFramebuffer* framebuffer,
+void GrVkSecondaryCommandBuffer::begin(GrVkGpu* gpu, const GrVkFramebuffer* framebuffer,
                                        const GrVkRenderPass* compatibleRenderPass) {
     SkASSERT(!fIsActive);
     SkASSERT(compatibleRenderPass);
@@ -912,8 +904,7 @@ void GrVkSecondaryCommandBuffer::begin(const GrVkGpu* gpu, const GrVkFramebuffer
                 VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         cmdBufferBeginInfo.pInheritanceInfo = &inheritanceInfo;
 
-        GR_VK_CALL_ERRCHECK(gpu->vkInterface(), BeginCommandBuffer(fCmdBuffer,
-                                                                   &cmdBufferBeginInfo));
+        GR_VK_CALL_ERRCHECK(gpu, BeginCommandBuffer(fCmdBuffer, &cmdBufferBeginInfo));
     }
     fIsActive = true;
 }
@@ -921,19 +912,18 @@ void GrVkSecondaryCommandBuffer::begin(const GrVkGpu* gpu, const GrVkFramebuffer
 void GrVkSecondaryCommandBuffer::end(GrVkGpu* gpu) {
     SkASSERT(fIsActive);
     if (!this->isWrapped()) {
-        GR_VK_CALL_ERRCHECK(gpu->vkInterface(), EndCommandBuffer(fCmdBuffer));
+        GR_VK_CALL_ERRCHECK(gpu, EndCommandBuffer(fCmdBuffer));
     }
     this->invalidateState();
     fIsActive = false;
     fHasWork = false;
 }
 
-void GrVkSecondaryCommandBuffer::recycle(GrVkGpu* gpu) {
+void GrVkSecondaryCommandBuffer::recycle(GrVkCommandPool* cmdPool) {
     if (this->isWrapped()) {
-        this->freeGPUData(gpu);
         delete this;
     } else {
-        fCmdPool->recycleSecondaryCommandBuffer(this);
+        cmdPool->recycleSecondaryCommandBuffer(this);
     }
 }
 

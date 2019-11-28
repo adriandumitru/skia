@@ -21,7 +21,11 @@ class GrBackendFormat;
 class GrBackendRenderTarget;
 class GrBackendTexture;
 struct GrContextOptions;
+class GrProcessorKeyBuilder;
+class GrProgramDesc;
+class GrProgramInfo;
 class GrRenderTargetProxy;
+class GrSamplerState;
 class GrSurface;
 class SkJSONWriter;
 
@@ -41,15 +45,6 @@ public:
         only for POT textures) */
     bool mipMapSupport() const { return fMipMapSupport; }
 
-    /**
-     * Skia convention is that a device only has sRGB support if it supports sRGB formats for both
-     * textures and framebuffers.
-     */
-    bool srgbSupport() const { return fSRGBSupport; }
-    /**
-     * Is there support for enabling/disabling sRGB writes for sRGB-capable color buffers?
-     */
-    bool srgbWriteControl() const { return fSRGBWriteControl; }
     bool gpuTracingSupport() const { return fGpuTracingSupport; }
     bool oversizedStencilSupport() const { return fOversizedStencilSupport; }
     bool textureBarrierSupport() const { return fTextureBarrierSupport; }
@@ -72,6 +67,14 @@ public:
     // On tilers, an initial fullscreen clear is an OPTIMIZATION. It allows the hardware to
     // initialize each tile with a constant value rather than loading each pixel from memory.
     bool preferFullscreenClears() const { return fPreferFullscreenClears; }
+
+    // Should we discard stencil values after a render pass? (Tilers get better performance if we
+    // always load stencil buffers with a "clear" op, and then discard the content when finished.)
+    bool discardStencilValuesAfterRenderPass() const {
+        // This method is actually just a duplicate of preferFullscreenClears(), with a descriptive
+        // name for the sake of readability.
+        return this->preferFullscreenClears();
+    }
 
     bool preferVRAMUseOverFlushes() const { return fPreferVRAMUseOverFlushes; }
 
@@ -160,7 +163,11 @@ public:
     }
 
     virtual bool isFormatSRGB(const GrBackendFormat&) const = 0;
-    virtual bool isFormatCompressed(const GrBackendFormat&) const = 0;
+
+    // Callers can optionally pass in an SkImage::CompressionType which will be filled in with the
+    // correct type if the GrBackendFormat is compressed.
+    virtual bool isFormatCompressed(const GrBackendFormat&,
+                                    SkImage::CompressionType* compressionType = nullptr) const = 0;
 
     // TODO: Once we use the supportWritePixels call for uploads, we can remove this function and
     // instead only have the version that takes a GrBackendFormat.
@@ -193,6 +200,10 @@ public:
     // sample count is 1 then 1 will be returned if non-MSAA rendering is supported, otherwise 0.
     // For historical reasons requestedCount==0 is handled identically to requestedCount==1.
     virtual int getRenderTargetSampleCount(int requestedCount, const GrBackendFormat&) const = 0;
+
+    // Returns the number of bytes per pixel for the given GrBackendFormat. This is only supported
+    // for "normal" formats. For compressed formats this will return 0.
+    virtual size_t bytesPerPixel(const GrBackendFormat&) const = 0;
 
     /**
      * Backends may have restrictions on what types of surfaces support GrGpu::writePixels().
@@ -323,6 +334,8 @@ public:
     // Many drivers have issues with color clears.
     bool performColorClearsAsDraws() const { return fPerformColorClearsAsDraws; }
 
+    bool avoidLargeIndexBufferDraws() const { return fAvoidLargeIndexBufferDraws; }
+
     /// Adreno 4xx devices experience an issue when there are a large number of stencil clip bit
     /// clears. The minimal repro steps are not precisely known but drawing a rect with a stencil
     /// op instead of using glClear seems to resolve the issue.
@@ -423,6 +436,17 @@ public:
         return result;
     }
 
+    /**
+     * Adds fields to the key to represent the sampler that will be created for the passed
+     * in parameters. Currently this extra keying is only needed when building a vulkan pipeline
+     * with immutable samplers.
+     */
+    virtual void addExtraSamplerKey(GrProcessorKeyBuilder*,
+                                    const GrSamplerState&,
+                                    const GrBackendFormat&) const {}
+
+    virtual GrProgramDesc makeDesc(const GrRenderTarget*, const GrProgramInfo&) const = 0;
+
 #ifdef SK_DEBUG
     // This is just a debugging entry point until we're weaned off of GrPixelConfig. It
     // should be used to verify that the pixel config from user-level code (the genericConfig)
@@ -440,17 +464,15 @@ public:
 #endif
 
 protected:
-    /** Subclasses must call this at the end of their constructors in order to apply caps
-        overrides requested by the client. Note that overrides will only reduce the caps never
-        expand them. */
-    void applyOptionsOverrides(const GrContextOptions& options);
+    // Subclasses must call this at the end of their init method in order to do final processing on
+    // the caps (including overrides requested by the client).
+    // NOTE: this method will only reduce the caps, never expand them.
+    void finishInitialization(const GrContextOptions& options);
 
     sk_sp<GrShaderCaps> fShaderCaps;
 
     bool fNPOTTextureTileSupport                     : 1;
     bool fMipMapSupport                              : 1;
-    bool fSRGBSupport                                : 1;
-    bool fSRGBWriteControl                           : 1;
     bool fReuseScratchTextures                       : 1;
     bool fReuseScratchBuffers                        : 1;
     bool fGpuTracingSupport                          : 1;
@@ -471,6 +493,7 @@ protected:
     bool fClampToBorderSupport                       : 1;
     bool fPerformPartialClearsAsDraws                : 1;
     bool fPerformColorClearsAsDraws                  : 1;
+    bool fAvoidLargeIndexBufferDraws                 : 1;
     bool fPerformStencilClearsAsDraws                : 1;
     bool fAllowCoverageCounting                      : 1;
     bool fTransferBufferSupport                      : 1;
@@ -516,6 +539,8 @@ protected:
     GrDriverBugWorkarounds fDriverBugWorkarounds;
 
 private:
+    void applyOptionsOverrides(const GrContextOptions& options);
+
     virtual void onApplyOptionsOverrides(const GrContextOptions&) {}
     virtual void onDumpJSON(SkJSONWriter*) const {}
     virtual bool onSurfaceSupportsWritePixels(const GrSurface*) const = 0;

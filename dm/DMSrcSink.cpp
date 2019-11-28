@@ -15,7 +15,6 @@
 #include "include/core/SkExecutor.h"
 #include "include/core/SkImageGenerator.h"
 #include "include/core/SkMallocPixelRef.h"
-#include "include/core/SkMultiPictureDraw.h"
 #include "include/core/SkPictureRecorder.h"
 #include "include/core/SkStream.h"
 #include "include/core/SkSurface.h"
@@ -60,7 +59,7 @@
 
 #if defined(SK_ENABLE_SKOTTIE)
     #include "modules/skottie/include/Skottie.h"
-    #include "modules/skottie/utils/SkottieUtils.h"
+    #include "modules/skresources/include/SkResources.h"
 #endif
 
 #if defined(SK_XML)
@@ -413,7 +412,7 @@ Error CodecSrc::draw(SkCanvas* canvas) const {
     if ((size.width() <= 10 || size.height() <= 10) && 1.0f != fScale) {
         return Error::Nonfatal("Scaling very small images is uninteresting.");
     }
-    decodeInfo = decodeInfo.makeWH(size.width(), size.height());
+    decodeInfo = decodeInfo.makeDimensions(size);
 
     const int bpp = decodeInfo.bytesPerPixel();
     const size_t rowBytes = size.width() * bpp;
@@ -794,7 +793,7 @@ Error AndroidCodecSrc::draw(SkCanvas* canvas) const {
     if ((size.width() <= 10 || size.height() <= 10) && 1 != fSampleSize) {
         return Error::Nonfatal("Scaling very small images is uninteresting.");
     }
-    decodeInfo = decodeInfo.makeWH(size.width(), size.height());
+    decodeInfo = decodeInfo.makeDimensions(size);
 
     int bpp = decodeInfo.bytesPerPixel();
     size_t rowBytes = size.width() * bpp;
@@ -976,8 +975,7 @@ Error ColorCodecSrc::draw(SkCanvas* canvas) const {
 
     SkImageInfo info = codec->getInfo();
     if (fDecodeToDst) {
-        info = canvas->imageInfo().makeWH(info.width(),
-                                          info.height());
+        info = canvas->imageInfo().makeDimensions(info.dimensions());
     }
 
     SkBitmap bitmap;
@@ -1118,7 +1116,10 @@ SkottieSrc::SkottieSrc(Path path) : fPath(std::move(path)) {}
 Error SkottieSrc::draw(SkCanvas* canvas) const {
     auto animation = skottie::Animation::Builder()
         .setResourceProvider(
-                skottie_utils::FileResourceProvider::Make(SkOSPath::Dirname(fPath.c_str())))
+                skresources::DataURIResourceProviderProxy::Make(
+                    skresources::FileResourceProvider::Make(SkOSPath::Dirname(fPath.c_str()),
+                                                              /*predecode=*/true),
+                    /*predecode=*/true))
         .makeFromFile(fPath.c_str());
     if (!animation) {
         return SkStringPrintf("Unable to parse file: %s", fPath.c_str());
@@ -1301,14 +1302,14 @@ static Error compare_bitmaps(const SkBitmap& reference, const SkBitmap& bitmap) 
     if (0 != memcmp(reference.getPixels(), bitmap.getPixels(), reference.computeByteSize())) {
         SkString encoded;
         SkString errString("Pixels don't match reference");
-        if (bitmap_to_base64_data_uri(reference, &encoded)) {
+        if (BipmapToBase64DataURI(reference, &encoded)) {
             errString.append("\nExpected: ");
             errString.append(encoded);
         } else {
             errString.append("\nExpected image failed to encode: ");
             errString.append(encoded);
         }
-        if (bitmap_to_base64_data_uri(bitmap, &encoded)) {
+        if (BipmapToBase64DataURI(bitmap, &encoded)) {
             errString.append("\nActual: ");
             errString.append(encoded);
         } else {
@@ -1367,8 +1368,7 @@ Error GPUSink::onDraw(const Src& src, SkBitmap* dst, SkWStream*, SkString* log,
 
     GrContextFactory factory(grOptions);
     const SkISize size = src.size();
-    SkImageInfo info =
-            SkImageInfo::Make(size.width(), size.height(), fColorType, fAlphaType, fColorSpace);
+    SkImageInfo info = SkImageInfo::Make(size, fColorType, fAlphaType, fColorSpace);
     sk_sp<SkSurface> surface;
     GrContext* context = factory.getContextInfo(fContextType, fContextOverrides).grContext();
     if (initContext) {
@@ -1427,8 +1427,7 @@ Error GPUSink::onDraw(const Src& src, SkBitmap* dst, SkWStream*, SkString* log,
         info.colorType() == kRGB_888x_SkColorType) {
         // We don't currently support readbacks into these formats on the GPU backend. Convert to
         // 32 bit.
-        info = SkImageInfo::Make(size.width(), size.height(), kRGBA_8888_SkColorType,
-                                 kPremul_SkAlphaType, fColorSpace);
+        info = SkImageInfo::Make(size, kRGBA_8888_SkColorType, kPremul_SkAlphaType, fColorSpace);
     }
     dst->allocPixels(info);
     canvas->readPixels(*dst, 0, 0);
@@ -1729,8 +1728,7 @@ Error RasterSink::draw(const Src& src, SkBitmap* dst, SkWStream*, SkString*) con
     SkAlphaType alphaType = kPremul_SkAlphaType;
     (void)SkColorTypeValidateAlphaType(fColorType, alphaType, &alphaType);
 
-    dst->allocPixelsFlags(SkImageInfo::Make(size.width(), size.height(),
-                                            fColorType, alphaType, fColorSpace),
+    dst->allocPixelsFlags(SkImageInfo::Make(size, fColorType, alphaType, fColorSpace),
                           SkBitmap::kZeroPixels_AllocFlag);
 
     SkCanvas canvas(*dst);
@@ -1824,7 +1822,7 @@ Error ViaUpright::draw(const Src& src, SkBitmap* bitmap, SkWStream* stream, SkSt
 
     SkBitmap uprighted;
     SkISize size = auto_compute_translate(&upright, bitmap->width(), bitmap->height());
-    uprighted.allocPixels(bitmap->info().makeWH(size.width(), size.height()));
+    uprighted.allocPixels(bitmap->info().makeDimensions(size));
 
     SkCanvas canvas(uprighted);
     canvas.concat(upright);
@@ -1862,59 +1860,6 @@ Error ViaSerialization::draw(
     }
 
     return check_against_reference(bitmap, src, fSink.get());
-}
-
-/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-
-ViaTiles::ViaTiles(int w, int h, SkBBHFactory* factory, Sink* sink)
-    : Via(sink)
-    , fW(w)
-    , fH(h)
-    , fFactory(factory) {}
-
-Error ViaTiles::draw(const Src& src, SkBitmap* bitmap, SkWStream* stream, SkString* log) const {
-    auto size = src.size();
-    SkPictureRecorder recorder;
-    Error err = src.draw(recorder.beginRecording(SkIntToScalar(size.width()),
-                                                 SkIntToScalar(size.height()),
-                                                 fFactory.get()));
-    if (!err.isEmpty()) {
-        return err;
-    }
-    sk_sp<SkPicture> pic(recorder.finishRecordingAsPicture());
-
-    return draw_to_canvas(fSink.get(), bitmap, stream, log, src.size(), [&](SkCanvas* canvas) {
-        const int xTiles = (size.width()  + fW - 1) / fW,
-                  yTiles = (size.height() + fH - 1) / fH;
-        SkMultiPictureDraw mpd(xTiles*yTiles);
-        SkTArray<sk_sp<SkSurface>> surfaces;
-//        surfaces.setReserve(xTiles*yTiles);
-
-        SkImageInfo info = canvas->imageInfo().makeWH(fW, fH);
-        for (int j = 0; j < yTiles; j++) {
-            for (int i = 0; i < xTiles; i++) {
-                // This lets our ultimate Sink determine the best kind of surface.
-                // E.g., if it's a GpuSink, the surfaces and images are textures.
-                auto s = canvas->makeSurface(info);
-                if (!s) {
-                    s = SkSurface::MakeRaster(info);  // Some canvases can't create surfaces.
-                }
-                surfaces.push_back(s);
-                SkCanvas* c = s->getCanvas();
-                c->translate(SkIntToScalar(-i * fW),
-                             SkIntToScalar(-j * fH));  // Line up the canvas with this tile.
-                mpd.add(c, pic.get());
-            }
-        }
-        mpd.draw();
-        for (int j = 0; j < yTiles; j++) {
-            for (int i = 0; i < xTiles; i++) {
-                sk_sp<SkImage> image(surfaces[i+xTiles*j]->makeImageSnapshot());
-                canvas->drawImage(image, SkIntToScalar(i*fW), SkIntToScalar(j*fH));
-            }
-        }
-        return "";
-    });
 }
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/

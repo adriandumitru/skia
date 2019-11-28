@@ -267,9 +267,9 @@ sk_sp<SkSpecialImage> SkXfermodeImageFilterImpl::filterImageGPU(
                 SkIntToScalar(bgSubset.left() - backgroundOffset.fX),
                 SkIntToScalar(bgSubset.top()  - backgroundOffset.fY));
         bgFP = GrTextureDomainEffect::Make(
-                    std::move(backgroundProxy), bgMatrix,
-                    GrTextureDomain::MakeTexelDomain(bgSubset, GrTextureDomain::kDecal_Mode),
-                    GrTextureDomain::kDecal_Mode, GrSamplerState::Filter::kNearest);
+                std::move(backgroundProxy), background->alphaType(), bgMatrix,
+                GrTextureDomain::MakeTexelDomain(bgSubset, GrTextureDomain::kDecal_Mode),
+                GrTextureDomain::kDecal_Mode, GrSamplerState::Filter::kNearest);
         bgFP = GrColorSpaceXformEffect::Make(std::move(bgFP), background->getColorSpace(),
                                              background->alphaType(),
                                              ctx.colorSpace());
@@ -284,7 +284,7 @@ sk_sp<SkSpecialImage> SkXfermodeImageFilterImpl::filterImageGPU(
                 SkIntToScalar(fgSubset.left() - foregroundOffset.fX),
                 SkIntToScalar(fgSubset.top()  - foregroundOffset.fY));
         auto foregroundFP = GrTextureDomainEffect::Make(
-                std::move(foregroundProxy), fgMatrix,
+                std::move(foregroundProxy), foreground->alphaType(), fgMatrix,
                 GrTextureDomain::MakeTexelDomain(fgSubset, GrTextureDomain::kDecal_Mode),
                 GrTextureDomain::kDecal_Mode, GrSamplerState::Filter::kNearest);
         foregroundFP = GrColorSpaceXformEffect::Make(std::move(foregroundFP),
@@ -317,12 +317,12 @@ sk_sp<SkSpecialImage> SkXfermodeImageFilterImpl::filterImageGPU(
     renderTargetContext->drawRect(GrNoClip(), std::move(paint), GrAA::kNo, matrix,
                                   SkRect::Make(bounds));
 
-    return SkSpecialImage::MakeDeferredFromGpu(
-            context,
-            SkIRect::MakeWH(bounds.width(), bounds.height()),
-            kNeedNewImageUniqueID_SpecialImage,
-            renderTargetContext->asTextureProxyRef(),
-            renderTargetContext->colorSpaceInfo().refColorSpace());
+    return SkSpecialImage::MakeDeferredFromGpu(context,
+                                               SkIRect::MakeWH(bounds.width(), bounds.height()),
+                                               kNeedNewImageUniqueID_SpecialImage,
+                                               renderTargetContext->asTextureProxyRef(),
+                                               renderTargetContext->colorInfo().colorType(),
+                                               renderTargetContext->colorInfo().refColorSpace());
 }
 
 std::unique_ptr<GrFragmentProcessor> SkXfermodeImageFilterImpl::makeFGFrag(
